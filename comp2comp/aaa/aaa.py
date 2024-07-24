@@ -103,10 +103,10 @@ class AortaSegmentation(InferenceClass):
             ) as zip_ref:
                 zip_ref.extractall(download_dir)
             os.remove(os.path.join(download_dir, "fold_0.zip"))
-            wget.download(
-                "https://huggingface.co/AdritRao/aaav2/resolve/main/plans.pkl",
-                out=os.path.join(download_dir, "plans.pkl"),
-            )
+            # wget.download(
+            #     "https://huggingface.co/AdritRao/aaav2/resolve/main/plans.pkl",
+            #     out=os.path.join(download_dir, "plans.pkl"),
+            # )
             print("Spine model downloaded.")
         else:
             print("Spine model already downloaded.")
