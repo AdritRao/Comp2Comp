@@ -107,6 +107,14 @@ class AortaSegmentation(InferenceClass):
             #     "https://huggingface.co/AdritRao/aaav2/resolve/main/plans.pkl",
             #     out=os.path.join(download_dir, "plans.pkl"),
             # )
+
+            contents = os.listdir(download_dir)
+            print("CONTENTS")
+            print(contents)
+            # Print the contents
+            for item in contents:
+                print(item)
+            print("END CONTENTS")
             print("Spine model downloaded.")
         else:
             print("Spine model already downloaded.")
