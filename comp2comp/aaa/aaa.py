@@ -95,7 +95,7 @@ class AortaSegmentation(InferenceClass):
         if not os.path.exists(fold_0_path):
             download_dir.mkdir(parents=True, exist_ok=True)
             wget.download(
-                "https://huggingface.co/AdritRao/aaa_test/resolve/main/fold_0.zip",
+                "https://huggingface.co/AdritRao/aaav2/resolve/main/fold_0.zip",
                 out=os.path.join(download_dir, "fold_0.zip"),
             )
             with zipfile.ZipFile(
@@ -104,7 +104,7 @@ class AortaSegmentation(InferenceClass):
                 zip_ref.extractall(download_dir)
             os.remove(os.path.join(download_dir, "fold_0.zip"))
             wget.download(
-                "https://huggingface.co/AdritRao/aaa_test/resolve/main/plans.pkl",
+                "https://huggingface.co/AdritRao/aaav2/resolve/main/plans.pkl",
                 out=os.path.join(download_dir, "plans.pkl"),
             )
             print("Spine model downloaded.")
