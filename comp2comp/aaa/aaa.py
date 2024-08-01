@@ -87,34 +87,26 @@ class AortaSegmentation(InferenceClass):
         download_dir = Path(
             os.path.join(
                 self.weights_dir,
-                "nnUNet/3d_fullres/Task253_Aorta/nnUNetTrainerV2_ep4000_nomirror__nnUNetPlansv2.1",
+                "nnUNet/3d_fullres/Task16_AMOS2022/nnUNetTrainerV2_ep4000_nomirror__nnUNetPlansv2.1",
             )
         )
         print(download_dir)
-        fold_0_path = download_dir / "fold_0"
+        fold_0_path = download_dir / "fold_1"
         if not os.path.exists(fold_0_path):
             download_dir.mkdir(parents=True, exist_ok=True)
             wget.download(
-                "https://huggingface.co/AdritRao/aaav2/resolve/main/fold_0.zip",
-                out=os.path.join(download_dir, "fold_0.zip"),
+                "https://huggingface.co/AdritRao/aaav3/resolve/main/fold_1.zip",
+                out=os.path.join(download_dir, "fold_1.zip"),
             )
             with zipfile.ZipFile(
-                os.path.join(download_dir, "fold_0.zip"), "r"
+                os.path.join(download_dir, "fold_1.zip"), "r"
             ) as zip_ref:
                 zip_ref.extractall(download_dir)
-            os.remove(os.path.join(download_dir, "fold_0.zip"))
-            # wget.download(
-            #     "https://huggingface.co/AdritRao/aaav2/resolve/main/plans.pkl",
-            #     out=os.path.join(download_dir, "plans.pkl"),
-            # )
-
-            contents = os.listdir(download_dir)
-            print("CONTENTS")
-            print(contents)
-            # Print the contents
-            for item in contents:
-                print(item)
-            print("END CONTENTS")
+            os.remove(os.path.join(download_dir, "fold_1.zip"))
+            wget.download(
+                "https://huggingface.co/AdritRao/aaav3/resolve/main/plans.pkl",
+                out=os.path.join(download_dir, "plans.pkl"),
+            )
             print("Spine model downloaded.")
         else:
             print("Spine model already downloaded.")
@@ -137,10 +129,9 @@ class AortaSegmentation(InferenceClass):
 
         # Setup nnunet
         model = "3d_fullres"
-        folds = [0]
+        folds = None
         trainer = "nnUNetTrainerV2_ep4000_nomirror"
-        crop_path = None
-        task_id = [253]
+        task_id = [16]
 
         self.setup_nnunet_c2c(model_dir)
         self.download_spine_model(model_dir)
@@ -157,9 +148,9 @@ class AortaSegmentation(InferenceClass):
                 trainer=trainer,
                 tta=False,
                 multilabel_image=True,
-                resample=1.5,
+                resample=None,
                 crop=None,
-                crop_path=crop_path,
+                crop_path=None,
                 task_name="total",
                 nora_tag="None",
                 preview=False,
