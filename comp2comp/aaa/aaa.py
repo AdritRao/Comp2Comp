@@ -87,7 +87,7 @@ class AortaSegmentation(InferenceClass):
         download_dir = Path(
             os.path.join(
                 self.weights_dir,
-                "nnUNet/3d_fullres/Task016_AMOS2022/nnUNetTrainerV2_ep4000_nomirror__nnUNetPlansv2.1",
+                "nnUNet/3d_fullres/Task253_Aorta/nnUNetTrainerV2_ep4000_nomirror__nnUNetPlansv2.1",
             )
         )
         print(download_dir)
@@ -131,7 +131,7 @@ class AortaSegmentation(InferenceClass):
         model = "3d_fullres"
         folds = None
         trainer = "nnUNetTrainerV2_ep4000_nomirror"
-        task_id = [16]
+        task_id = [253]
 
         self.setup_nnunet_c2c(model_dir)
         self.download_spine_model(model_dir)
