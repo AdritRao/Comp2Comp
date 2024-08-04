@@ -51,7 +51,7 @@ setup(
         "tqdm",
         "silx",
         "yacs",
-        "pandas",
+        "pandas==1.4.3",
         "dosma",
         "opencv-python",
         "huggingface_hub",
