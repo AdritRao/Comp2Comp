@@ -45,7 +45,7 @@ setup(
     install_requires=[
         "pydicom",
         "moviepy",
-        "numpy==1.23.5",
+        "numpy==1.26.4",
         "h5py",
         "tabulate",
         "tqdm",
@@ -57,7 +57,7 @@ setup(
         "huggingface_hub",
         "pycocotools",
         "wget",
-        "tensorflow==2.12.0",
+        "tensorflow",
         "totalsegmentator @ git+https://github.com/StanfordMIMI/TotalSegmentator.git",
         "totalsegmentatorv2 @ git+https://github.com/StanfordMIMI/TotalSegmentatorV2.git",
     ],
