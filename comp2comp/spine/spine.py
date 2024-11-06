@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 from time import time
 from typing import Union
-
+import pydicom
 import nibabel as nib
 import numpy as np
 import pandas as pd
@@ -227,9 +227,7 @@ class SpineSegmentation(InferenceClass):
 
 
 class AxialCropper(InferenceClass):
-    """Crop the CT image (medical_volume) and segmentation based on user-specified
-    lower and upper levels of the spine.
-    """
+    """Crop the CT image (medical_volume) and segmentation based on user-specified lower and upper levels of the spine."""
 
     def __init__(self, lower_level: str = "L5", upper_level: str = "L1", save=True):
         """
@@ -254,33 +252,63 @@ class AxialCropper(InferenceClass):
         self.save = save
 
     def __call__(self, inference_pipeline):
-        """
-        First dim goes from L to R.
-        Second dim goes from P to A.
-        Third dim goes from I to S.
-        """
         segmentation = inference_pipeline.segmentation
         segmentation_data = segmentation.get_fdata()
         try:
-            upper_level_index = np.where(segmentation_data == self.upper_level_index)[
-                2
-            ].max()
+            upper_level_index = np.where(segmentation_data == self.upper_level_index)[2].max()
         except:
             upper_level_index = segmentation_data.shape[2]
         try:
-            lower_level_index = np.where(segmentation_data == self.lower_level_index)[
-                2
-            ].min()
+            lower_level_index = np.where(segmentation_data == self.lower_level_index)[2].min()
         except:
             lower_level_index = 0
-        segmentation = segmentation.slicer[:, :, lower_level_index:upper_level_index]
-        inference_pipeline.segmentation = segmentation
 
         medical_volume = inference_pipeline.medical_volume
-        medical_volume = medical_volume.slicer[
-            :, :, lower_level_index:upper_level_index
-        ]
+        length_before_cropping = medical_volume.shape[2]
+
+        dicom_dir = inference_pipeline.dicom_series_path
+        slice_data = []
+
+        for dicom_file in sorted(os.listdir(dicom_dir)):
+            dicom_path = os.path.join(dicom_dir, dicom_file)
+            try:
+                dcm = pydicom.dcmread(dicom_path)
+                instance_number = dcm.InstanceNumber
+                slice_location = dcm.SliceLocation
+                slice_data.append([dicom_file, instance_number, slice_location])
+            except Exception as e:
+                print(f"Error reading {dicom_path}: {e}")
+
+        instance_csv_output_dir = os.path.join(inference_pipeline.output_dir, "csv")
+        if not os.path.exists(instance_csv_output_dir):
+            os.makedirs(instance_csv_output_dir, exist_ok=True)
+        instance_csv_path = os.path.join(instance_csv_output_dir, "slice_instance_numbers.csv")
+        instance_df = pd.DataFrame(slice_data, columns=['FileName', 'InstanceNumber', 'SliceLocation'])
+        instance_df.to_csv(instance_csv_path, index=False)
+
+        seg_normal = segmentation.slicer[:, :, lower_level_index:upper_level_index]
+        inference_pipeline.segmentation = seg_normal
+
+        # ## l3 segmentation
+        # seg_l3 = segmentation.slicer[:, :, l3_level:l3_level]
+        # inference_pipeline.segl3 = seg_l3
+
+        medical_volume = medical_volume.slicer[:, :, lower_level_index:upper_level_index]
         inference_pipeline.medical_volume = medical_volume
+
+        length_after_cropping = medical_volume.shape[2]
+
+        csv_output_dir = os.path.join(inference_pipeline.output_dir, "csv")
+        if not os.path.exists(csv_output_dir):
+            os.makedirs(csv_output_dir, exist_ok=True)
+        csv_path = os.path.join(csv_output_dir, "volume_lengths.csv")
+        df = pd.DataFrame({
+            'Length Before Cropping': [length_before_cropping],
+            'Length After Cropping': [length_after_cropping],
+            'Lower Level Index': [lower_level_index],
+            'Upper Level Index': [upper_level_index]
+        })
+        df.to_csv(csv_path, index=False)
 
         if self.save:
             nib.save(
@@ -298,6 +326,191 @@ class AxialCropper(InferenceClass):
                 ),
             )
         return {}
+
+
+# class AxialCropper(InferenceClass):
+#     """Calculate and store the indices for L1-L5 range, but save the original medical volume."""
+
+#     def __init__(self, lower_level: str = "L5", upper_level: str = "L1", save=True):
+#         """
+#         Args:
+#             lower_level (str, optional): Lower level of the spine. Defaults to "L5".
+#             upper_level (str, optional): Upper level of the spine. Defaults to "L1".
+#             save (bool, optional): Save cropped image and segmentation. Defaults to True.
+
+#         Raises:
+#             ValueError: If lower_level or upper_level is not a valid spine level.
+#         """
+#         super().__init__()
+#         self.lower_level = lower_level
+#         self.upper_level = upper_level
+#         ts_spine_full_model = Models.model_from_name("ts_spine")
+#         categories = ts_spine_full_model.categories
+#         try:
+#             self.lower_level_index = categories[self.lower_level]
+#             self.upper_level_index = categories[self.upper_level]
+#         except KeyError:
+#             raise ValueError("Invalid spine level.") from None
+#         self.save = save
+
+#     def __call__(self, inference_pipeline):
+#         segmentation = inference_pipeline.segmentation
+#         segmentation_data = segmentation.get_fdata()
+#         try:
+#             upper_level_index = np.where(segmentation_data == self.upper_level_index)[2].max()
+#         except:
+#             upper_level_index = segmentation_data.shape[2]
+#         try:
+#             lower_level_index = np.where(segmentation_data == self.lower_level_index)[2].min()
+#         except:
+#             lower_level_index = 0
+
+#         # Get lengths of the medical volume before cropping
+#         medical_volume = inference_pipeline.medical_volume
+#         length_before_cropping = medical_volume.shape[2]
+
+#         # Save InstanceNumber for each slice to a CSV
+#         dicom_dir = inference_pipeline.dicom_series_path
+#         slice_data = []
+
+#         for dicom_file in sorted(os.listdir(dicom_dir)):
+#             dicom_path = os.path.join(dicom_dir, dicom_file)
+#             try:
+#                 dcm = pydicom.dcmread(dicom_path)
+#                 instance_number = dcm.InstanceNumber
+#                 slice_data.append([dicom_file, instance_number])
+#             except Exception as e:
+#                 print(f"Error reading {dicom_path}: {e}")
+
+#         instance_csv_output_dir = os.path.join(inference_pipeline.output_dir, "csv")
+#         if not os.path.exists(instance_csv_output_dir):
+#             os.makedirs(instance_csv_output_dir, exist_ok=True)
+#         instance_csv_path = os.path.join(instance_csv_output_dir, "slice_instance_numbers.csv")
+#         instance_df = pd.DataFrame(slice_data, columns=['FileName', 'InstanceNumber'])
+#         instance_df.to_csv(instance_csv_path, index=False)
+
+#         # Get lengths of the medical volume after cropping (just for logging)
+#         length_after_cropping = upper_level_index - lower_level_index
+
+#         # Save lengths and indices to CSV
+#         csv_output_dir = os.path.join(inference_pipeline.output_dir, "csv")
+#         if not os.path.exists(csv_output_dir):
+#             os.makedirs(csv_output_dir, exist_ok=True)
+#         csv_path = os.path.join(csv_output_dir, "volume_lengths.csv")
+#         df = pd.DataFrame({
+#             'Length Before Cropping': [length_before_cropping],
+#             'Length After Cropping': [length_after_cropping],
+#             'Lower Level Index': [lower_level_index],
+#             'Upper Level Index': [upper_level_index]
+#         })
+#         df.to_csv(csv_path, index=False)
+
+#         if self.save:
+#             nib.save(
+#                 segmentation,
+#                 os.path.join(
+#                     inference_pipeline.output_dir, "segmentations", "spine.nii.gz"
+#                 ),
+#             )
+#             nib.save(
+#                 medical_volume,
+#                 os.path.join(
+#                     inference_pipeline.output_dir,
+#                     "segmentations",
+#                     "converted_dcm.nii.gz",
+#                 ),
+#             )
+#         return {}
+
+
+
+
+# class AxialCropper(InferenceClass):
+#     """Crop the CT image (medical_volume) and segmentation based on user-specified
+#     lower and upper levels of the spine.
+#     """
+
+#     def __init__(self, lower_level: str = "L5", upper_level: str = "L1", save=True):
+#         """
+#         Args:
+#             lower_level (str, optional): Lower level of the spine. Defaults to "L5".
+#             upper_level (str, optional): Upper level of the spine. Defaults to "L1".
+#             save (bool, optional): Save cropped image and segmentation. Defaults to True.
+
+#         Raises:
+#             ValueError: If lower_level or upper_level is not a valid spine level.
+#         """
+#         super().__init__()
+#         self.lower_level = lower_level
+#         self.upper_level = upper_level
+#         ts_spine_full_model = Models.model_from_name("ts_spine")
+#         categories = ts_spine_full_model.categories
+#         try:
+#             self.lower_level_index = categories[self.lower_level]
+#             self.upper_level_index = categories[self.upper_level]
+#         except KeyError:
+#             raise ValueError("Invalid spine level.") from None
+#         self.save = save
+
+#     def __call__(self, inference_pipeline):
+#         """
+#         First dim goes from L to R.
+#         Second dim goes from P to A.
+#         Third dim goes from I to S.
+#         """
+#         segmentation = inference_pipeline.segmentation
+#         segmentation_data = segmentation.get_fdata()
+#         try:
+#             upper_level_index = np.where(segmentation_data == self.upper_level_index)[2].max()
+#         except:
+#             upper_level_index = segmentation_data.shape[2]
+#         try:
+#             lower_level_index = np.where(segmentation_data == self.lower_level_index)[2].min()
+#         except:
+#             lower_level_index = 0
+
+#         # Get lengths of the medical volume before cropping
+#         medical_volume = inference_pipeline.medical_volume
+#         length_before_cropping = medical_volume.shape[2]
+
+#         segmentation = segmentation.slicer[:, :, lower_level_index:upper_level_index]
+#         inference_pipeline.segmentation = segmentation
+
+#         medical_volume = medical_volume.slicer[:, :, lower_level_index:upper_level_index]
+#         inference_pipeline.medical_volume = medical_volume
+
+#         # Get lengths of the medical volume after cropping
+#         length_after_cropping = medical_volume.shape[2]
+
+#         # Save lengths and indices to CSV
+#         csv_output_dir = os.path.join(inference_pipeline.output_dir, "csv")
+#         if not os.path.exists(csv_output_dir):
+#             os.makedirs(csv_output_dir, exist_ok=True)
+#         csv_path = os.path.join(csv_output_dir, "volume_lengths.csv")
+#         df = pd.DataFrame({
+#             'Length Before Cropping': [length_before_cropping],
+#             'Length After Cropping': [length_after_cropping],
+#             'Lower Level Index': [lower_level_index],
+#             'Upper Level Index': [upper_level_index]
+#         })
+#         df.to_csv(csv_path, index=False)
+
+#         if self.save:
+#             nib.save(
+#                 segmentation,
+#                 os.path.join(
+#                     inference_pipeline.output_dir, "segmentations", "spine.nii.gz"
+#                 ),
+#             )
+#             nib.save(
+#                 medical_volume,
+#                 os.path.join(
+#                     inference_pipeline.output_dir,
+#                     "segmentations",
+#                     "converted_dcm.nii.gz",
+#                 ),
+#             )
+#         return {}
 
 
 class SpineComputeROIs(InferenceClass):
