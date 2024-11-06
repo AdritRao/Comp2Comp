@@ -6,6 +6,7 @@ from pathlib import Path
 from time import time
 from tkinter import Tcl
 from typing import Union
+from time import time, sleep
 
 import cv2
 import matplotlib.pyplot as plt
@@ -16,9 +17,24 @@ import pandas as pd
 import pydicom
 import wget
 from totalsegmentator.libs import nostdout
+import re
+import subprocess
+import zipfile
 
 from comp2comp.inference_class_base import InferenceClass
-
+import pydicom
+import numpy as np
+import cv2
+import os
+import pandas as pd
+from typing import Union
+import matplotlib.pyplot as plt
+from moviepy.video.io.ImageSequenceClip import ImageSequenceClip
+import math
+import operator
+from pathlib import Path
+from comp2comp.inference_class_base import InferenceClass
+import shutil
 
 class AortaSegmentation(InferenceClass):
     """Spine segmentation."""
@@ -185,12 +201,8 @@ class AortaDiameter(InferenceClass):
         return (img - img.min()) / (img.max() - img.min())
 
     def __call__(self, inference_pipeline):
-        axial_masks = (
-            inference_pipeline.axial_masks
-        )  # list of 2D numpy arrays of shape (512, 512)
-        ct_img = (
-            inference_pipeline.ct_image
-        )  # 3D numpy array of shape (512, 512, num_axial_slices)
+        axial_masks = inference_pipeline.axial_masks  # list of 2D numpy arrays of shape (512, 512)
+        ct_img = inference_pipeline.ct_image  # 3D numpy array of shape (512, 512, num_axial_slices)
 
         # image output directory
         output_dir = inference_pipeline.output_dir
@@ -198,10 +210,20 @@ class AortaDiameter(InferenceClass):
         if not os.path.exists(output_dir_slices):
             os.makedirs(output_dir_slices)
 
-        output_dir = inference_pipeline.output_dir
         output_dir_summary = os.path.join(output_dir, "images/summary/")
         if not os.path.exists(output_dir_summary):
             os.makedirs(output_dir_summary)
+
+        # Load CSV from Spine Pipeline
+        csv_path = os.path.join(output_dir, "csv", "volume_lengths.csv")
+        volume_df = pd.read_csv(csv_path)
+        total_slices = volume_df['Length Before Cropping'].iloc[0]
+        upper_level_index = volume_df['Upper Level Index'].iloc[0]
+        lower_level_index = volume_df['Lower Level Index'].iloc[0]
+        start_slice = total_slices - upper_level_index
+        end_slice = total_slices - lower_level_index
+
+        start_slice = end_slice
 
         DICOM_PATH = inference_pipeline.dicom_series_path
         dicom = pydicom.dcmread(DICOM_PATH + "/" + os.listdir(DICOM_PATH)[0])
@@ -214,12 +236,17 @@ class AortaDiameter(InferenceClass):
         SLICE_COUNT = dicom["InstanceNumber"].value
         print(SLICE_COUNT)
 
-        SLICE_COUNT = len(ct_img)
         diameterDict = {}
 
         for i in range(len(ct_img)):
-            mask = axial_masks[i].astype("uint8")
+            
+            print("CT IMAGE LENGTH")
+            print(len(ct_img))
 
+            print("SEG LENGTH")
+            print(len(axial_masks))
+
+            mask = axial_masks[i].astype("uint8")
             img = ct_img[i]
 
             img = np.clip(img, -300, 1800)
@@ -227,86 +254,104 @@ class AortaDiameter(InferenceClass):
             img = img.reshape((img.shape[0], img.shape[1], 1))
             img = np.tile(img, (1, 1, 3))
 
-            contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+            if np.any(mask):  # If there is a segmentation
+                contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
 
-            if len(contours) != 0:
-                areas = [cv2.contourArea(c) for c in contours]
-                sorted_areas = np.sort(areas)
+                if len(contours) != 0:
+                    areas = [cv2.contourArea(c) for c in contours]
+                    sorted_areas = np.sort(areas)
+                    contours = contours[areas.index(sorted_areas[-1])]
 
-                areas = [cv2.contourArea(c) for c in contours]
-                sorted_areas = np.sort(areas)
-                contours = contours[areas.index(sorted_areas[-1])]
+                    if len(contours) >= 5:  # Check if there are enough points to fit an ellipse
+                        img_copy = img.copy()
 
-                img.copy()
+                        back = img_copy.copy()
+                        cv2.drawContours(back, [contours], 0, (0, 255, 0), -1)
 
-                back = img.copy()
-                cv2.drawContours(back, [contours], 0, (0, 255, 0), -1)
+                        alpha = 0.25
+                        img_copy = cv2.addWeighted(img_copy, 1 - alpha, back, alpha, 0)
 
-                alpha = 0.25
-                img = cv2.addWeighted(img, 1 - alpha, back, alpha, 0)
+                        ellipse = cv2.fitEllipse(contours)
+                        (xc, yc), (d1, d2), angle = ellipse
 
-                ellipse = cv2.fitEllipse(contours)
-                (xc, yc), (d1, d2), angle = ellipse
+                        cv2.ellipse(img_copy, ellipse, (0, 255, 0), 1)
 
-                cv2.ellipse(img, ellipse, (0, 255, 0), 1)
+                        xc, yc = ellipse[0]
+                        cv2.circle(img_copy, (int(xc), int(yc)), 5, (0, 0, 255), -1)
 
-                xc, yc = ellipse[0]
-                cv2.circle(img, (int(xc), int(yc)), 5, (0, 0, 255), -1)
+                        rmajor = max(d1, d2) / 2
+                        rminor = min(d1, d2) / 2
 
-                rmajor = max(d1, d2) / 2
-                rminor = min(d1, d2) / 2
+                        # Draw major axes
+                        if angle > 90:
+                            angle = angle - 90
+                        else:
+                            angle = angle + 90
+                        xtop = xc + math.cos(math.radians(angle)) * rmajor
+                        ytop = yc + math.sin(math.radians(angle)) * rmajor
+                        xbot = xc + math.cos(math.radians(angle + 180)) * rmajor
+                        ybot = yc + math.sin(math.radians(angle + 180)) * rmajor
+                        cv2.line(img_copy, (int(xtop), int(ytop)), (int(xbot), int(ybot)), (0, 0, 255), 3)
 
-                ### Draw major axes
+                        # Draw minor axes
+                        if angle > 90:
+                            angle = angle - 90
+                        else:
+                            angle = angle + 90
+                        x1 = xc + math.cos(math.radians(angle)) * rminor
+                        y1 = yc + math.sin(math.radians(angle)) * rminor
+                        x2 = xc + math.cos(math.radians(angle + 180)) * rminor
+                        y2 = yc + math.sin(math.radians(angle + 180)) * rminor
+                        cv2.line(img_copy, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 3)
 
-                if angle > 90:
-                    angle = angle - 90
-                else:
-                    angle = angle + 90
-                print(angle)
-                xtop = xc + math.cos(math.radians(angle)) * rmajor
-                ytop = yc + math.sin(math.radians(angle)) * rmajor
-                xbot = xc + math.cos(math.radians(angle + 180)) * rmajor
-                ybot = yc + math.sin(math.radians(angle + 180)) * rmajor
-                cv2.line(
-                    img, (int(xtop), int(ytop)), (int(xbot), int(ybot)), (0, 0, 255), 3
-                )
+                        pixel_length = rminor * 2
+                        print("Pixel_length_minor: " + str(pixel_length))
 
-                ### Draw minor axes
+                        area_px = cv2.contourArea(contours)
+                        area_mm = round(area_px * RATIO_PIXEL_TO_MM)
+                        area_cm = area_mm / 10
 
-                if angle > 90:
-                    angle = angle - 90
-                else:
-                    angle = angle + 90
-                print(angle)
-                x1 = xc + math.cos(math.radians(angle)) * rminor
-                y1 = yc + math.sin(math.radians(angle)) * rminor
-                x2 = xc + math.cos(math.radians(angle + 180)) * rminor
-                y2 = yc + math.sin(math.radians(angle + 180)) * rminor
-                cv2.line(img, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 3)
+                        # diameter_mm = round((pixel_length) * RATIO_PIXEL_TO_MM)
+                        diameter_mm = (pixel_length) * RATIO_PIXEL_TO_MM
+                        diameter_cm = diameter_mm / 10
 
-                # pixel_length = math.sqrt( (x1-x2)**2 + (y1-y2)**2 )
-                pixel_length = rminor * 2
+                        slice_number = start_slice - i
+                        diameterDict[slice_number] = diameter_cm
 
-                print("Pixel_length_minor: " + str(pixel_length))
+                        img_copy = cv2.rotate(img_copy, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
-                area_px = cv2.contourArea(contours)
-                area_mm = round(area_px * RATIO_PIXEL_TO_MM)
-                area_cm = area_mm / 10
+                        h, w, c = img_copy.shape
+                        lbls = [
+                            "Area (mm): " + str(area_mm) + "mm",
+                            "Area (cm): " + str(area_cm) + "cm",
+                            "Diameter (mm): " + str(diameter_mm) + "mm",
+                            "Diameter (cm): " + str(diameter_cm) + "cm",
+                            "Slice: " + str(slice_number),
+                        ]
+                        font = cv2.FONT_HERSHEY_SIMPLEX
 
-                diameter_mm = round((pixel_length) * RATIO_PIXEL_TO_MM)
-                diameter_cm = diameter_mm / 10
+                        scale = 0.03
+                        fontScale = min(w, h) / (25 / scale)
 
-                diameterDict[(SLICE_COUNT - (i))] = diameter_cm
+                        cv2.putText(img_copy, lbls[0], (10, 40), font, fontScale, (0, 255, 0), 2)
+                        cv2.putText(img_copy, lbls[1], (10, 70), font, fontScale, (0, 255, 0), 2)
+                        cv2.putText(img_copy, lbls[2], (10, 100), font, fontScale, (0, 255, 0), 2)
+                        cv2.putText(img_copy, lbls[3], (10, 130), font, fontScale, (0, 255, 0), 2)
+                        cv2.putText(img_copy, lbls[4], (10, 160), font, fontScale, (0, 255, 0), 2)
+
+                        cv2.imwrite(output_dir_slices + "slice" + str(slice_number) + ".png", img_copy)
+            else:  # No segmentation
+                diameterDict[start_slice - i] = 0
 
                 img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
                 h, w, c = img.shape
                 lbls = [
-                    "Area (mm): " + str(area_mm) + "mm",
-                    "Area (cm): " + str(area_cm) + "cm",
-                    "Diameter (mm): " + str(diameter_mm) + "mm",
-                    "Diameter (cm): " + str(diameter_cm) + "cm",
-                    "Slice: " + str(SLICE_COUNT - (i)),
+                    "Area (mm): 0mm",
+                    "Area (cm): 0cm",
+                    "Diameter (mm): 0mm",
+                    "Diameter (cm): 0cm",
+                    "Slice: " + str(start_slice - i),
                 ]
                 font = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -314,51 +359,55 @@ class AortaDiameter(InferenceClass):
                 fontScale = min(w, h) / (25 / scale)
 
                 cv2.putText(img, lbls[0], (10, 40), font, fontScale, (0, 255, 0), 2)
-
                 cv2.putText(img, lbls[1], (10, 70), font, fontScale, (0, 255, 0), 2)
-
                 cv2.putText(img, lbls[2], (10, 100), font, fontScale, (0, 255, 0), 2)
-
                 cv2.putText(img, lbls[3], (10, 130), font, fontScale, (0, 255, 0), 2)
-
                 cv2.putText(img, lbls[4], (10, 160), font, fontScale, (0, 255, 0), 2)
 
-                cv2.imwrite(
-                    output_dir_slices + "slice" + str(SLICE_COUNT - (i)) + ".png", img
-                )
+                cv2.imwrite(output_dir_slices + "slice" + str(start_slice - i) + ".png", img)
 
-        plt.bar(list(diameterDict.keys()), diameterDict.values(), color="b")
+        
+        # for i in range(l3_masks):
+        #     print("analyzing l3_masks")
+            
+            
 
-        plt.title(r"$\bf{Diameter}$" + " " + r"$\bf{Progression}$")
+        #     ## max transerverse on L3
+        #     l3_diameter = 0 
+            
+        #     ## max aortic diameter (prev. computed)
+        #     max_diameter = inference_pipeline.max_diameter
 
-        plt.xlabel("Slice Number")
+        #     ## a4_v index calculation
+        #     a4_v = inference_pipeline.max_diameter / l3_diameter
 
-        plt.ylabel("Diameter Measurement (cm)")
-        plt.savefig(output_dir_summary + "diameter_graph.png", dpi=500)
+        #     print(a4_v)
+
+
+        # Create and save the diameter progression graph
+        # plt.bar(list(diameterDict.keys()), diameterDict.values(), color="b")
+        # plt.title(r"$\bf{Diameter}$" + " " + r"$\bf{Progression}$")
+        # plt.xlabel("Slice Number")
+        # plt.ylabel("Diameter Measurement (cm)")
+        # plt.savefig(output_dir_summary + "diameter_graph.png", dpi=500)
 
         print(diameterDict)
-        print(max(diameterDict.items(), key=operator.itemgetter(1))[0])
-        print(diameterDict[max(diameterDict.items(), key=operator.itemgetter(1))[0]])
+        max_diameter_slice = max(diameterDict.items(), key=lambda x: x[1])[0]
+        max_diameter_value = diameterDict[max_diameter_slice]
 
-        inference_pipeline.max_diameter = diameterDict[
-            max(diameterDict.items(), key=operator.itemgetter(1))[0]
-        ]
+        print("Max diameter slice:", max_diameter_slice)
+        print("Max diameter value:", max_diameter_value)
 
-        img = ct_img[
-            SLICE_COUNT - (max(diameterDict.items(), key=operator.itemgetter(1))[0])
-        ]
+        inference_pipeline.max_diameter = max_diameter_value
+        inference_pipeline.max_diameter_slice = max_diameter_slice
+        img = ct_img[max_diameter_slice - start_slice]
         img = np.clip(img, -300, 1800)
         img = self.normalize_img(img) * 255.0
         img = img.reshape((img.shape[0], img.shape[1], 1))
         img2 = np.tile(img, (1, 1, 3))
         img2 = cv2.rotate(img2, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
-        img1 = cv2.imread(
-            output_dir_slices
-            + "slice"
-            + str(max(diameterDict.items(), key=operator.itemgetter(1))[0])
-            + ".png"
-        )
+        img1 = cv2.imread(output_dir_slices + "slice" + str(max_diameter_slice) + ".png")
 
         border_size = 3
         img1 = cv2.copyMakeBorder(
@@ -370,33 +419,281 @@ class AortaDiameter(InferenceClass):
             borderType=cv2.BORDER_CONSTANT,
             value=[0, 244, 0],
         )
-        img2 = cv2.copyMakeBorder(
-            img2,
+        # img2 = cv2.copyMakeBorder(
+        #     img2,
+        #     top=border_size,
+        #     bottom=border_size,
+        #     left=border_size,
+        #     right=border_size,
+        #     borderType=cv2.BORDER_CONSTANT,
+        #     value=[244, 0, 0],
+        # )
+
+        # vis = np.concatenate((img2, img1), axis=1)
+        cv2.imwrite(output_dir_summary + "out.png", img1)
+
+        # Create a video from the image slices
+        # # Create a video from the image slices
+        image_folder = output_dir_slices
+        fps = 20
+
+        # Function to extract the number from the filename
+        def extract_number(filename):
+            match = re.search(r'(\d+)', filename)
+            return int(match.group(1)) if match else float('inf')
+
+        # Get and sort the image files
+        image_files = [
+            os.path.join(image_folder, img)
+            for img in sorted(os.listdir(image_folder), key=extract_number)
+            if img.endswith(".png")
+        ]
+
+        # Create the video clip
+        clip = ImageSequenceClip(image_files, fps=fps)
+        clip.write_videofile(os.path.join(output_dir_summary, "aaa.mp4"))
+
+        return {}
+
+    # def __init__(self):
+    #     super().__init__()
+
+    # def normalize_img(self, img: np.ndarray) -> np.ndarray:
+    #     """Normalize the image.
+    #     Args:
+    #         img (np.ndarray): Input image.
+    #     Returns:
+    #         np.ndarray: Normalized image.
+    #     """
+    #     return (img - img.min()) / (img.max() - img.min())
+
+    # def __call__(self, inference_pipeline):
+        axial_masks = inference_pipeline.axial_masks  # list of 2D numpy arrays of shape (512, 512)
+        ct_img = inference_pipeline.ct_image  # 3D numpy array of shape (512, 512, num_axial_slices)
+
+        # image output directory
+        output_dir = inference_pipeline.output_dir
+        output_dir_slices = os.path.join(output_dir, "images/slices/")
+        if not os.path.exists(output_dir_slices):
+            os.makedirs(output_dir_slices)
+
+        output_dir_summary = os.path.join(output_dir, "images/summary/")
+        if not os.path.exists(output_dir_summary):
+            os.makedirs(output_dir_summary)
+
+        # Load CSV from Spine Pipeline
+        csv_path = os.path.join(output_dir, "csv", "volume_lengths.csv")
+        volume_df = pd.read_csv(csv_path)
+        total_slices = volume_df['Length Before Cropping'].iloc[0]
+        upper_level_index = volume_df['Upper Level Index'].iloc[0]
+        lower_level_index = volume_df['Lower Level Index'].iloc[0]
+        start_slice = total_slices - upper_level_index
+        end_slice = total_slices - lower_level_index
+
+        start_slice = end_slice
+
+        DICOM_PATH = inference_pipeline.dicom_series_path
+        dicom = pydicom.dcmread(DICOM_PATH + "/" + os.listdir(DICOM_PATH)[0])
+
+        dicom.PhotometricInterpretation = "YBR_FULL"
+        pixel_conversion = dicom.PixelSpacing
+        print("Pixel conversion: " + str(pixel_conversion))
+        RATIO_PIXEL_TO_MM = pixel_conversion[0]
+
+        SLICE_COUNT = dicom["InstanceNumber"].value
+        print(SLICE_COUNT)
+
+        diameterDict = {}
+
+        for i in range(len(ct_img)):
+            mask = axial_masks[i].astype("uint8")
+            img = ct_img[i]
+
+            img = np.clip(img, -300, 1800)
+            img = self.normalize_img(img) * 255.0
+            img = img.reshape((img.shape[0], img.shape[1], 1))
+            img = np.tile(img, (1, 1, 3))
+
+            if np.any(mask):  # If there is a segmentation
+                contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+
+                if len(contours) != 0:
+                    areas = [cv2.contourArea(c) for c in contours]
+                    sorted_areas = np.sort(areas)
+                    contours = contours[areas.index(sorted_areas[-1])]
+
+                    if len(contours) >= 5:  # Check if there are enough points to fit an ellipse
+                        img_copy = img.copy()
+
+                        back = img_copy.copy()
+                        cv2.drawContours(back, [contours], 0, (0, 255, 0), -1)
+
+                        alpha = 0.25
+                        img_copy = cv2.addWeighted(img_copy, 1 - alpha, back, alpha, 0)
+
+                        ellipse = cv2.fitEllipse(contours)
+                        (xc, yc), (d1, d2), angle = ellipse
+
+                        cv2.ellipse(img_copy, ellipse, (0, 255, 0), 1)
+
+                        xc, yc = ellipse[0]
+                        cv2.circle(img_copy, (int(xc), int(yc)), 5, (0, 0, 255), -1)
+
+                        rmajor = max(d1, d2) / 2
+                        rminor = min(d1, d2) / 2
+
+                        # Draw major axes
+                        if angle > 90:
+                            angle = angle - 90
+                        else:
+                            angle = angle + 90
+                        xtop = xc + math.cos(math.radians(angle)) * rmajor
+                        ytop = yc + math.sin(math.radians(angle)) * rmajor
+                        xbot = xc + math.cos(math.radians(angle + 180)) * rmajor
+                        ybot = yc + math.sin(math.radians(angle + 180)) * rmajor
+                        cv2.line(img_copy, (int(xtop), int(ytop)), (int(xbot), int(ybot)), (0, 0, 255), 3)
+
+                        # Draw minor axes
+                        if angle > 90:
+                            angle = angle - 90
+                        else:
+                            angle = angle + 90
+                        x1 = xc + math.cos(math.radians(angle)) * rminor
+                        y1 = yc + math.sin(math.radians(angle)) * rminor
+                        x2 = xc + math.cos(math.radians(angle + 180)) * rminor
+                        y2 = yc + math.sin(math.radians(angle + 180)) * rminor
+                        cv2.line(img_copy, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 3)
+
+                        pixel_length = rminor * 2
+                        print("Pixel_length_minor: " + str(pixel_length))
+
+                        area_px = cv2.contourArea(contours)
+                        area_mm = round(area_px * RATIO_PIXEL_TO_MM)
+                        area_cm = area_mm / 10
+
+                        diameter_mm = (pixel_length) * RATIO_PIXEL_TO_MM
+                        diameter_cm = diameter_mm / 10
+
+                        slice_number = start_slice - i
+                        diameterDict[slice_number] = diameter_cm
+
+                        img_copy = cv2.rotate(img_copy, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+                        h, w, c = img_copy.shape
+                        lbls = [
+                            "Area (mm): " + str(area_mm) + "mm",
+                            "Area (cm): " + str(area_cm) + "cm",
+                            "Diameter (mm): " + str(diameter_mm) + "mm",
+                            "Diameter (cm): " + str(diameter_cm) + "cm",
+                            "Slice: " + str(slice_number),
+                        ]
+                        font = cv2.FONT_HERSHEY_SIMPLEX
+
+                        scale = 0.03
+                        fontScale = min(w, h) / (25 / scale)
+
+                        cv2.putText(img_copy, lbls[0], (10, 40), font, fontScale, (0, 255, 0), 2)
+                        cv2.putText(img_copy, lbls[1], (10, 70), font, fontScale, (0, 255, 0), 2)
+                        cv2.putText(img_copy, lbls[2], (10, 100), font, fontScale, (0, 255, 0), 2)
+                        cv2.putText(img_copy, lbls[3], (10, 130), font, fontScale, (0, 255, 0), 2)
+                        cv2.putText(img_copy, lbls[4], (10, 160), font, fontScale, (0, 255, 0), 2)
+
+                        cv2.imwrite(output_dir_slices + "slice" + str(slice_number) + ".png", img_copy)
+            else:  # No segmentation
+                diameterDict[start_slice - i] = 0
+
+                img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+                h, w, c = img.shape
+                lbls = [
+                    "Area (mm): 0mm",
+                    "Area (cm): 0cm",
+                    "Diameter (mm): 0mm",
+                    "Diameter (cm): 0cm",
+                    "Slice: " + str(start_slice - i),
+                ]
+                font = cv2.FONT_HERSHEY_SIMPLEX
+
+                scale = 0.03
+                fontScale = min(w, h) / (25 / scale)
+
+                cv2.putText(img, lbls[0], (10, 40), font, fontScale, (0, 255, 0), 2)
+                cv2.putText(img, lbls[1], (10, 70), font, fontScale, (0, 255, 0), 2)
+                cv2.putText(img, lbls[2], (10, 100), font, fontScale, (0, 255, 0), 2)
+                cv2.putText(img, lbls[3], (10, 130), font, fontScale, (0, 255, 0), 2)
+                cv2.putText(img, lbls[4], (10, 160), font, fontScale, (0, 255, 0), 2)
+
+                cv2.imwrite(output_dir_slices + "slice" + str(start_slice - i) + ".png", img)
+
+        # Create and save the diameter progression graph
+        plt.bar(list(diameterDict.keys()), diameterDict.values(), color="b")
+        plt.title(r"$\bf{Diameter}$" + " " + r"$\bf{Progression}$")
+        plt.xlabel("Slice Number")
+        plt.ylabel("Diameter Measurement (cm)")
+        plt.savefig(output_dir_summary + "diameter_graph.png", dpi=500)
+
+        print(diameterDict)
+        max_diameter_slice = max(diameterDict.items(), key=lambda x: x[1])[0]
+        max_diameter_value = diameterDict[max_diameter_slice]
+
+        print("Max diameter slice:", max_diameter_slice)
+        print("Max diameter value:", max_diameter_value)
+
+        inference_pipeline.max_diameter = max_diameter_value
+        inference_pipeline.max_diameter_slice = max_diameter_slice
+        # img = ct_img[max_diameter_slice]
+        # img = np.clip(img, -300, 1800)
+        # img = self.normalize_img(img) * 255.0
+        # img = img.reshape((img.shape[0], img.shape[1], 1))
+        # img2 = np.tile(img, (1, 1, 3))
+        # img2 = cv2.rotate(img2, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+        img1 = cv2.imread(output_dir_slices + "slice" + str(max_diameter_slice) + ".png")
+
+        border_size = 3
+        img1 = cv2.copyMakeBorder(
+            img1,
             top=border_size,
             bottom=border_size,
             left=border_size,
             right=border_size,
             borderType=cv2.BORDER_CONSTANT,
-            value=[244, 0, 0],
+            value=[0, 244, 0],
         )
+        # img2 = cv2.copyMakeBorder(
+        #     img2,
+        #     top=border_size,
+        #     bottom=border_size,
+        #     left=border_size,
+        #     right=border_size,
+        #     borderType=cv2.BORDER_CONSTANT,
+        #     value=[244, 0, 0],
+        # )
 
-        vis = np.concatenate((img2, img1), axis=1)
-        cv2.imwrite(output_dir_summary + "out.png", vis)
+        # vis = np.concatenate((img2, img1), axis=1)
+        cv2.imwrite(output_dir_summary + "out.png", img1)
 
+        # # Create a video from the image slices
         image_folder = output_dir_slices
         fps = 20
+
+        # Function to extract the number from the filename
+        def extract_number(filename):
+            match = re.search(r'(\d+)', filename)
+            return int(match.group(1)) if match else float('inf')
+
+        # Get and sort the image files
         image_files = [
             os.path.join(image_folder, img)
-            for img in Tcl().call("lsort", "-dict", os.listdir(image_folder))
+            for img in sorted(os.listdir(image_folder), key=extract_number)
             if img.endswith(".png")
         ]
-        clip = moviepy.video.io.ImageSequenceClip.ImageSequenceClip(
-            image_files, fps=fps
-        )
-        clip.write_videofile(output_dir_summary + "aaa.mp4")
+
+        # Create the video clip
+        clip = ImageSequenceClip(image_files, fps=fps)
+        clip.write_videofile(os.path.join(output_dir_summary, "aaa.mp4"))
 
         return {}
-
 
 class AortaMetricsSaver(InferenceClass):
     """Save metrics to a CSV file."""
@@ -407,6 +704,7 @@ class AortaMetricsSaver(InferenceClass):
     def __call__(self, inference_pipeline):
         """Save metrics to a CSV file."""
         self.max_diameter = inference_pipeline.max_diameter
+        self.max_diameter_slice = inference_pipeline.max_diameter_slice
         self.dicom_series_path = inference_pipeline.dicom_series_path
         self.output_dir = inference_pipeline.output_dir
         self.csv_output_dir = os.path.join(self.output_dir, "metrics")
@@ -418,6 +716,34 @@ class AortaMetricsSaver(InferenceClass):
     def save_results(self):
         """Save results to a CSV file."""
         _, filename = os.path.split(self.dicom_series_path)
-        data = [[filename, str(self.max_diameter)]]
-        df = pd.DataFrame(data, columns=["Filename", "Max Diameter"])
+        data = [[filename, str(self.max_diameter), str(self.max_diameter_slice)]]
+        df = pd.DataFrame(data, columns=["Filename", "Max Diameter", "Max Diameter Slice"])
         df.to_csv(os.path.join(self.csv_output_dir, "aorta_metrics.csv"), index=False)
+        # script_path = "/scratch/users/adritrao/Comp2Comp/run_nnunet.sh"
+        # print("resetting nnunet")
+        # template_content = """#!/bin/bash
+        # #SBATCH --job-name=test_job
+        # #SBATCH --output=test_job.%j.out
+        # #SBATCH --error=test_job.%j.err
+        # #SBATCH --ntasks=1
+        # #SBATCH --cpus-per-task=1
+        # #SBATCH --mem-per-cpu=8G
+        # #SBATCH -p gpu
+        # #SBATCH --gpus=1
+        # #SBATCH --time=00:10:00
+
+        # source /scratch/users/adritrao/miniconda/etc/profile.d/conda.sh
+        # conda init bash
+        # conda deactivate
+        # conda activate train
+        # nnUNet_predict -i {INPUT_PATH} -o {OUTPUT_FOLDER} -t {TASK_ID} -m {MODEL} -f {FOLDS} -tr {TRAINER}
+        # conda init
+        # conda deactivate
+        # conda init
+        # conda activate aaa
+        # """
+        #     # Write the template content to the script file
+        # with open(script_path, "w") as script_file:
+        #     script_file.write(template_content)
+
+        print("done resetting")
